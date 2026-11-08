@@ -7,8 +7,40 @@ names.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-08
+
+Each teammate can run on its own AI: Claude, OpenAI, xAI, Gemini, MiniMax and other OpenAI-compatible
+services, each connection with its own key. Also a Chinese UI, local computers and start at sign-in on
+Windows, CI on Linux, macOS and Windows, a first slice of browser workflow recording, and several security
+fixes.
+
 **OpenGrokBot is now OpenSuperBot**, a name that no longer borrows xAI's "Grok". Existing installs upgrade in
 place: see [Coming from OpenGrokBot](docs/always-on.md#coming-from-opengrokbot).
+
+### Security
+
+- A local computer's screen stream (`/screen/:botId/ws`) was served without the gateway's token and origin
+  checks; it is now guarded like the noVNC path.
+- Sandboxed commands can no longer read the operator's home directory. Both sandboxes hide it entirely and put
+  back only runtime managers (`~/.nvm`, `~/.volta`, `~/.pyenv`, `~/.cargo/bin`, …) read-only; before, Seatbelt
+  denied a short list of key folders and bubblewrap denied none of them. The self-check now also fails if a
+  command can list the home directory, and the switch refuses to turn on when no self-check is wired.
+- `write_file` on a local computer opens the final path component without following symlinks.
+- On Windows the gateway token file is limited to your account: its access list is reset (which also clears entries
+  written on the file itself, such as the creator's default `SYSTEM` and `Administrators` grants), inherited access is
+  removed, and only your user (by SID) is granted. Before, `0600` did nothing there and the file kept whatever its
+  folder allowed. Start-up warns if it cannot restrict the file, and an existing token is tightened on the next
+  start.
+- A local computer's file tools refuse Windows device names (`CON`, `NUL`, `COM1`, … — reading `CON` would wait for
+  input forever) and colons, which would write into an alternate data stream.
+- The gateway runs on hono 4.13.16 and `@hono/node-server` 2.1.6, which fix several advisories. The one that reached
+  the gateway: a client that dropped its connection while the gateway was still setting up a WebSocket (a screen
+  viewer while the teammate's browser starts, say) raised an unhandled socket error and stopped the process
+  (GHSA-qv5m-9pm6-hqp3). The server also no longer turns a backslash in the path into `/`, which could carry a
+  request past a reverse proxy's path rules (GHSA-jpvv-r467-5p4w). The rest do not apply here: the origin check
+  reads the `Host` header rather than the request URL (GHSA-7v5p-43qr-wch5), the token check is a single `*`
+  middleware, and the gateway uses neither `mount()` nor the form validator. ws 8.22.1, `@types/node` 26.6.6 and
+  `@vitejs/plugin-react` 6.2.1 came in the same update.
 
 ### Added
 
@@ -46,12 +78,11 @@ place: see [Coming from OpenGrokBot](docs/always-on.md#coming-from-opengrokbot).
   resets the models teammates picked on it. A Claude connection without a key refuses to run instead of letting
   the SDK pick up Anthropic credentials or `ANTHROPIC_CUSTOM_HEADERS` from the machine; a reply cut off at the
   output limit is reported instead of acted on.
-
 - The gateway keeps settings of its own (schema v6 adds a `settings` table): provider, API base, model, vision,
   language, computers, browser mirror and update checks. An env var still wins over a saved value. The model API
   key can live in `<data>/llm-key` instead of `OPENSUPERBOT_API_KEY`. Like the gateway token next to it, only your
   account can read it (mode `0600`; on Windows, an ACL for your account alone), and it is out of reach of
-  sandboxed commands and containers. Nothing writes these from the UI yet.
+  sandboxed commands and containers. The AI models dialog writes the model settings; the rest have no UI yet.
 - Model settings apply without a restart: the API base, model, key and vision are read again before each model
   call, so a change takes effect on the next call while a call already in flight finishes as it started. The
   choice of computers and the browser mirror still apply at startup.
@@ -99,6 +130,18 @@ place: see [Coming from OpenGrokBot](docs/always-on.md#coming-from-opengrokbot).
 - First teach-mode slice: record semantic browser actions on the teammate's existing page, review the draft before
   saving it to SQLite, redact sensitive input, and reattach across local-computer window relaunches. API-only; replay
   and routines remain out of scope.
+- **Local computers on Windows**, with the browser and the folder: the gateway finds Chrome, Edge, Chromium or Brave
+  where Windows installs them (for all users or just you) and otherwise downloads Chrome for Testing. Commands stay
+  off, because Windows has no sandbox as strong as Seatbelt or bubblewrap; a teammate that needs a shell there
+  gets a Docker computer.
+- **Start at sign-in on Windows**: `deploy/windows/install-task.ps1` registers a Task Scheduler task that runs the
+  gateway as you, in your session (so a sign-in window can appear), and restarts it if it stops.
+- **CI on Linux, macOS and Windows.** Typecheck, tests and build run on all three, and a new job runs the
+  local-computer smoke test on each against the runner's real Chrome — on Linux with bubblewrap and a virtual
+  display, on macOS with Seatbelt, on Windows with the extra path checks. The Windows job also installs and removes
+  the start-up task.
+- `deploy/linux/bwrap.apparmor`: the AppArmor profile bubblewrap needs on Ubuntu 23.10 and later, which otherwise
+  stop it from creating the user namespace it sandboxes commands in. CI applies the same file.
 
 ### Changed
 
@@ -114,72 +157,6 @@ place: see [Coming from OpenGrokBot](docs/always-on.md#coming-from-opengrokbot).
   - Docker computers named `opengrokbot-<id>` are replaced on first use; sign-ins live in the workspace, so they
     carry over. An image built as `opengrokbot/bot:dev` is tagged with the new name instead of rebuilt.
   - Running `install-task.ps1` again removes the old Windows task, so two gateways never fight over the port.
-
-### Security
-
-- A local computer's screen stream (`/screen/:botId/ws`) was served without the gateway's token and origin
-  checks; it is now guarded like the noVNC path.
-- Sandboxed commands can no longer read the operator's home directory. Both sandboxes hide it entirely and put
-  back only runtime managers (`~/.nvm`, `~/.volta`, `~/.pyenv`, `~/.cargo/bin`, …) read-only; before, Seatbelt
-  denied a short list of key folders and bubblewrap denied none of them. The self-check now also fails if a
-  command can list the home directory, and the switch refuses to turn on when no self-check is wired.
-- `write_file` on a local computer opens the final path component without following symlinks.
-- On Windows the gateway token file is limited to your account: its access list is reset (which also clears entries
-  written on the file itself, such as the creator's default `SYSTEM` and `Administrators` grants), inherited access is
-  removed, and only your user (by SID) is granted. Before, `0600` did nothing there and the file kept whatever its folder allowed. Start-up warns
-  if it cannot restrict the file, and an existing token is tightened on the next start.
-- A local computer's file tools refuse Windows device names (`CON`, `NUL`, `COM1`, … — reading `CON` would wait for
-  input forever) and colons, which would write into an alternate data stream.
-- The gateway runs on hono 4.13.16 and `@hono/node-server` 2.1.6, which fix several advisories. The one that reached
-  the gateway: a client that dropped its connection while the gateway was still setting up a WebSocket (a screen
-  viewer while the teammate's browser starts, say) raised an unhandled socket error and stopped the process
-  (GHSA-qv5m-9pm6-hqp3). The server also no longer turns a backslash in the path into `/`, which could carry a
-  request past a reverse proxy's path rules (GHSA-jpvv-r467-5p4w). The rest do not apply here: the origin check
-  reads the `Host` header rather than the request URL (GHSA-7v5p-43qr-wch5), the token check is a single `*`
-  middleware, and the gateway uses neither `mount()` nor the form validator. ws 8.22.1, `@types/node` 26.6.6 and
-  `@vitejs/plugin-react` 6.2.1 came in the same update.
-
-### Added
-
-- **Local computers on Windows**, with the browser and the folder: the gateway finds Chrome, Edge, Chromium or Brave
-  where Windows installs them (for all users or just you) and otherwise downloads Chrome for Testing. Commands stay
-  off, because Windows has no sandbox as strong as Seatbelt or bubblewrap; a teammate that needs a shell there
-  gets a Docker computer.
-- **Start at sign-in on Windows**: `deploy/windows/install-task.ps1` registers a Task Scheduler task that runs the
-  gateway as you, in your session (so a sign-in window can appear), and restarts it if it stops.
-- **CI on Linux, macOS and Windows.** Typecheck, tests and build run on all three, and a new job runs the
-  local-computer smoke test on each against the runner's real Chrome — on Linux with bubblewrap and a virtual
-  display, on macOS with Seatbelt, on Windows with the extra path checks. The Windows job also installs and removes
-  the start-up task.
-- `deploy/linux/bwrap.apparmor`: the AppArmor profile bubblewrap needs on Ubuntu 23.10 and later, which otherwise
-  stop it from creating the user namespace it sandboxes commands in. CI applies the same file.
-
-### Fixed
-
-- Turning on commands for a local computer when the sandbox was missing or failed its self-check left the switch
-  off without saying why: the UI treated the gateway's 409 as "already done". The reason now shows in the panel.
-- A machine with no Chrome, Edge or Chromium could not download a browser for its local teammates: the
-  download failed at once with `ERR_PACKAGE_PATH_NOT_EXPORTED`, because playwright-core does not export its
-  `cli.js`. The gateway now finds the installer through the package's own folder.
-- The sign-in window of a local computer closed as soon as the teammate used its browser again, or a routine
-  fired — while the operator might be typing a password. It now closes only when the operator speaks again
-  (a message, a decision) or clicks *I'm done signing in*.
-- The panel's screen froze on the last frame after the browser was reopened for a sign-in; the stream now ends
-  and the panel reconnects to the new browser.
-- The screen viewer no longer retries forever (relaunching the browser each time) after the gateway says there
-  is no screen, and stops streaming while the tab is hidden.
-- The commands switch and the done button lock while the gateway works and show its refusal inline.
-- The shell tool and the briefing describe a local computer's working directory honestly (the folder is the
-  working directory and `$HOME`; `/workspace` is the file tools' name for it); `ask_for_login` tells the model to
-  stop and wait. The node the gateway runs on is first on a sandboxed command's PATH, so nvm-installed nodes work.
-- `running()` no longer counts a local computer whose browser the operator quit by hand.
-- Commands on a Linux local computer could never be turned on when a runtime manager (`~/.cargo/bin`, `~/.nvm`, …)
-  or the gateway's own folder sat in your home directory, which is the usual case: the sandbox self-check counted
-  bubblewrap's own mount points as a view of your home. It now ignores exactly the folders it binds back, and also
-  checks with a probe file it puts in your home and removes. Found by the new Linux CI job.
-
-### Changed
-
 - A teammate no longer edits earlier messages when it takes a new screenshot. The older screenshots are swapped
   for a placeholder when the request is sent, the same as before, except on Claude: Claude rejects later
   thinking blocks once anything before them changes, so it keeps up to ten (prompt caching makes the repeats
@@ -205,6 +182,27 @@ place: see [Coming from OpenGrokBot](docs/always-on.md#coming-from-opengrokbot).
 
 ### Fixed
 
+- Turning on commands for a local computer when the sandbox was missing or failed its self-check left the switch
+  off without saying why: the UI treated the gateway's 409 as "already done". The reason now shows in the panel.
+- A machine with no Chrome, Edge or Chromium could not download a browser for its local teammates: the
+  download failed at once with `ERR_PACKAGE_PATH_NOT_EXPORTED`, because playwright-core does not export its
+  `cli.js`. The gateway now finds the installer through the package's own folder.
+- The sign-in window of a local computer closed as soon as the teammate used its browser again, or a routine
+  fired — while the operator might be typing a password. It now closes only when the operator speaks again
+  (a message, a decision) or clicks *I'm done signing in*.
+- The panel's screen froze on the last frame after the browser was reopened for a sign-in; the stream now ends
+  and the panel reconnects to the new browser.
+- The screen viewer no longer retries forever (relaunching the browser each time) after the gateway says there
+  is no screen, and stops streaming while the tab is hidden.
+- The commands switch and the done button lock while the gateway works and show its refusal inline.
+- The shell tool and the briefing describe a local computer's working directory honestly (the folder is the
+  working directory and `$HOME`; `/workspace` is the file tools' name for it); `ask_for_login` tells the model to
+  stop and wait. The node the gateway runs on is first on a sandboxed command's PATH, so nvm-installed nodes work.
+- `running()` no longer counts a local computer whose browser the operator quit by hand.
+- Commands on a Linux local computer could never be turned on when a runtime manager (`~/.cargo/bin`, `~/.nvm`, …)
+  or the gateway's own folder sat in your home directory, which is the usual case: the sandbox self-check counted
+  bubblewrap's own mount points as a view of your home. It now ignores exactly the folders it binds back, and also
+  checks with a probe file it puts in your home and removes. Found by the new Linux CI job.
 - A gateway test that failed now and then on CI. It waits for two replies in a row, and `vi.waitFor` gave up at its
   default of one second on a slow runner; gateway tests now wait up to three seconds, as the web tests already do.
 
@@ -468,7 +466,8 @@ A self-hosted Grok Bot alternative assembled from OpenClaw: three preconfigured 
 Ticker) with strict boundaries, agent-to-agent handoffs, any model provider, a one-command setup that never
 overwrites an existing OpenClaw config, a Docker/VPS path and an honest comparison with Grok Bot.
 
-[Unreleased]: https://github.com/wolfqing/OpenSuperBot/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/wolfqing/OpenSuperBot/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/wolfqing/OpenSuperBot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/wolfqing/OpenSuperBot/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/wolfqing/OpenSuperBot/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/wolfqing/OpenSuperBot/compare/v0.2.1...v0.3.0

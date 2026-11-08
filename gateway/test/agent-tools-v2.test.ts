@@ -35,7 +35,7 @@ function setup() {
 async function runTool(name: string, args: unknown, computer = createFakeComputer(), extra = {}) {
   const { db, threadId, events, emitted } = setup()
   const { llm, calls } = scriptedLLM([toolTurn(name, args), textTurn])
-  await runTurn({ db, llm, bot, soul: '', threadId, getComputer: async () => computer, ...extra }, 'go', events)
+  await runTurn({ db, llm, bot, soul: '', threadId, getComputer: async () => computer, origin: 'operator', ...extra }, 'go', events)
   const toolMsg = calls[1]!.find((m) => m.role === 'tool')!
   return { result: String(toolMsg.content), computer, db, threadId, emitted, calls }
 }

@@ -7,6 +7,14 @@ names.
 
 ## [Unreleased]
 
+### Security
+
+- **Only turns you start can change a teammate's standing setup.** Saving or forgetting a rule and creating or
+  stopping a routine used to work in any turn, so text in a webhook payload, a page a routine read, or a
+  teammate's handoff could have left a new routine or removed one of your rules behind. These four tools are now
+  offered only in a turn you started, refused if the model names them anyway in any other turn, and the attempt
+  is logged. Handing work to a teammate still works from any turn.
+
 ## [0.5.0] - 2026-11-08
 
 Each teammate can run on its own AI: Claude, OpenAI, xAI, Gemini, MiniMax and other OpenAI-compatible

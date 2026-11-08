@@ -80,7 +80,7 @@ describe('save_memory', () => {
     const { db, threadId, messages, events } = setup()
     const llm = scriptedLLM([toolTurn('save_memory', { rule: 'quiet-account sends wait for your read' }), textTurn])
     await runTurn({
-      db, llm, bot, soul: '', threadId,
+      db, llm, bot, soul: '', threadId, origin: 'operator',
       onSaveMemory: async (rule) => ({ rule, diff: `+ - ${rule}`, total: 3 }),
     }, 'hold globex until i have read the note', events)
 
@@ -96,7 +96,7 @@ describe('save_memory', () => {
     const { db, threadId, messages, events } = setup()
     const llm = scriptedLLM([toolTurn('save_memory', { rule: 'same' }), textTurn])
     await runTurn({
-      db, llm, bot, soul: '', threadId,
+      db, llm, bot, soul: '', threadId, origin: 'operator',
       onSaveMemory: async (rule) => ({ rule, diff: '', total: 1 }),
     }, 'remember that', events)
     expect(messages.some((m) => m.kind === 'memory_updated')).toBe(false)
@@ -112,7 +112,7 @@ describe('create_routine', () => {
       textTurn,
     ])
     await runTurn({
-      db, llm, bot, soul: '', threadId,
+      db, llm, bot, soul: '', threadId, origin: 'operator',
       onCreateRoutine: async (input) => ({
         id: 3, name: input.name, cron: input.cron, human: 'every day at 09:00', webhook: false, mode: input.mode,
       }),
@@ -128,7 +128,7 @@ describe('create_routine', () => {
     const { db, threadId, messages, events } = setup()
     const llm = scriptedLLM([toolTurn('create_routine', { name: 'Bad', cron: 'every morning', instructions: 'x' }), textTurn])
     await runTurn({
-      db, llm, bot, soul: '', threadId,
+      db, llm, bot, soul: '', threadId, origin: 'operator',
       onCreateRoutine: async () => { throw new Error('not a valid cron expression: every morning') },
     }, 'schedule it', events)
     expect(messages.some((m) => m.kind === 'routine_created')).toBe(false)

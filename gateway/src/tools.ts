@@ -352,11 +352,22 @@ const RELAY_TOOL: ToolDef = {
   },
 }
 
+/**
+ * 改「你定下的常设安排」的工具：记忆里的规矩、例行任务。只在你自己开头的回合里给。
+ * routine、webhook、同事转交起的回合，读到的可能是陌生人写的字；让它们能新建一条 routine
+ * 或删掉一条规矩，注入的指令就能在这一回合结束后还留下来。
+ */
+export const OPERATOR_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'save_memory', 'forget_memory', 'create_routine', 'stop_routine',
+])
+
 export function buildTools(opts: {
   hasComputer: boolean
   canRelay?: boolean
   hasSkills?: boolean
   watch?: boolean
+  /** false = 这一回合不是操作者开的头：改常设安排的工具不列出来（执行时另有一道门） */
+  operatorTurn?: boolean
   /** false = 这台电脑没有命令行（本机模式默认）：连工具都不列，模型就不会去试 */
   shell?: boolean
   /** 本机电脑的 shell 说明不一样（没有 /workspace 这个目录） */
@@ -373,6 +384,6 @@ export function buildTools(opts: {
     ...(opts.hasSkills ? [SKILL_TOOL] : []),
     ...(opts.canRelay ? [RELAY_TOOL] : []),
     ...(opts.hasComputer ? computerTools : []),
-  ]
+  ].filter((t) => opts.operatorTurn !== false || !OPERATOR_ONLY_TOOL_NAMES.has(t.function.name))
   return opts.watch ? tools.filter((t) => WATCH_TOOL_NAMES.has(t.function.name)) : tools
 }

@@ -110,11 +110,11 @@ describe('runTurn with a computer', () => {
   it('only advertises computer tools when a computer is available', async () => {
     const { db, threadId, events } = setup()
     const withComputer = scriptedLLM([textTurn])
-    await runTurn({ db, llm: withComputer, bot, soul: '', threadId, getComputer: async () => createFakeComputer() }, 'hi', events)
+    await runTurn({ db, llm: withComputer, bot, soul: '', threadId, origin: 'operator', getComputer: async () => createFakeComputer() }, 'hi', events)
     expect((withComputer.calls[0]!.tools as { function: { name: string } }[]).length).toBe(19)
 
     const without = scriptedLLM([textTurn])
-    await runTurn({ db, llm: without, bot, soul: '', threadId }, 'hi', events)
+    await runTurn({ db, llm: without, bot, soul: '', threadId, origin: 'operator' }, 'hi', events)
     expect((without.calls[0]!.tools as { function: { name: string } }[]).length).toBe(7)
   })
 })

@@ -1,4 +1,5 @@
 import type { Config } from './config.js'
+import { openChatDiag, toolDiagEnabled, type ChatDiag } from './tool-diag.js'
 
 export type ChatMsg = {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -30,7 +31,14 @@ const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms
 const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const backoffMs = (attempt: number) => 1000 * 2 ** attempt
 
-class ProviderError extends Error {}
+class ProviderError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ProviderError'
+    this.status = status
+  }
+}
 
 function retryAfterMs(res: Response): number | null {
   const value = res.headers.get('retry-after')
@@ -54,24 +62,33 @@ function toWire(m: ChatMsg): Record<string, unknown> {
 }
 
 export function createLLM(config: Config, fetchImpl: typeof fetch = fetch, sleep: Sleep = realSleep): LLM {
-  if (config.model === 'stub') return createStubLLM()
+  if (config.model === 'stub') return observeStub(config, createStubLLM())
   const url = `${config.baseURL.replace(/\/$/, '')}/chat/completions`
   return {
     async chat(messages, tools, opts = {}) {
+      const toolChoiceSent = tools.length && opts.toolChoice ? opts.toolChoice : undefined
       const body = JSON.stringify({
         ...config.extraBody,
         model: config.model,
         messages: messages.map(toWire),
         ...(tools.length ? { tools } : {}),
-        ...(tools.length && opts.toolChoice ? { tool_choice: opts.toolChoice } : {}),
+        ...(toolChoiceSent ? { tool_choice: toolChoiceSent } : {}),
+      })
+      const diag = openChatDiag({
+        baseURL: config.baseURL,
+        model: config.model,
+        toolNames: tools.map((tool) => tool?.function?.name),
+        toolChoice: toolChoiceSent,
       })
       type WireToolCall = { id: string; function?: { name?: string; arguments?: string } }
       type WireResponse = {
-        choices?: { message?: { role: 'assistant'; content?: string | null; tool_calls?: WireToolCall[] } }[]
+        choices?: { finish_reason?: unknown; message?: { role: 'assistant'; content?: string | null; tool_calls?: WireToolCall[] } }[]
         usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
       }
       let data: WireResponse
+      let attempts = 1
       for (let attempt = 0; ; attempt++) {
+        attempts = attempt + 1
         const canRetry = attempt < config.llmRetries
         // 没有超时的话，一个挂住的请求会让 bot 在「思考中」里卡五分钟（undici 的默认值）
         const timeout = AbortSignal.timeout(config.llmTimeoutMs)
@@ -92,41 +109,112 @@ export function createLLM(config: Config, fetchImpl: typeof fetch = fetch, sleep
               await sleep(retryAfterMs(res) ?? backoffMs(attempt))
               continue
             }
-            throw new ProviderError(`LLM API ${res.status}: ${detail}`)
+            throw new ProviderError(res.status, `LLM API ${res.status}: ${detail}`)
           }
           data = (await res.json()) as WireResponse
           break
         } catch (err) {
-          if (err instanceof ProviderError) throw err
-          if (opts.signal?.aborted) throw err // 操作者按了停止：立刻收手，不重试
+          if (err instanceof ProviderError) {
+            failDiag(diag, 'http_error', { attempts, httpStatus: err.status })
+            throw err
+          }
+          if (opts.signal?.aborted) {
+            failDiag(diag, 'aborted', { attempts })
+            throw err // 操作者按了停止：立刻收手，不重试
+          }
           if (canRetry) {
             await sleep(backoffMs(attempt))
             continue
           }
-          if (timeout.aborted) throw new Error(`LLM API timed out after ${config.llmTimeoutMs / 1000}s`)
+          if (timeout.aborted) {
+            failDiag(diag, 'timeout', { attempts })
+            throw new Error(`LLM API timed out after ${config.llmTimeoutMs / 1000}s`)
+          }
+          failDiag(diag, 'unreachable', { attempts })
           throw new Error(`LLM API unreachable: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
-      const msg = data.choices?.[0]?.message
-      if (!msg) throw new Error('LLM API: empty choices')
-      return {
-        content: msg.content ?? null,
-        toolCalls: (msg.tool_calls ?? []).map((t) => ({
-          id: t.id,
-          name: t.function?.name ?? '',
-          args: safeParseJson(t.function?.arguments),
-        })),
-        raw: msg as ChatMsg,
-        ...(data.usage ? {
-          usage: {
-            prompt: data.usage.prompt_tokens ?? 0,
-            completion: data.usage.completion_tokens ?? 0,
-            cached: data.usage.prompt_tokens_details?.cached_tokens ?? 0,
-          },
-        } : {}),
+      const choice = data.choices?.[0]
+      const msg = choice?.message
+      if (!msg) {
+        failDiag(diag, 'empty_choices', { attempts, finishReason: choice?.finish_reason })
+        throw new Error('LLM API: empty choices')
+      }
+      let turn: AssistantTurn
+      try {
+        turn = {
+          content: msg.content ?? null,
+          toolCalls: (msg.tool_calls ?? []).map((t) => {
+            try { diag.noteCall(t.function?.name, t.function?.arguments) } catch { /* diagnostic must not affect parsing */ }
+            return {
+              id: t.id,
+              name: t.function?.name ?? '',
+              args: safeParseJson(t.function?.arguments),
+            }
+          }),
+          raw: msg as ChatMsg,
+          ...(data.usage ? {
+            usage: {
+              prompt: data.usage.prompt_tokens ?? 0,
+              completion: data.usage.completion_tokens ?? 0,
+              cached: data.usage.prompt_tokens_details?.cached_tokens ?? 0,
+            },
+          } : {}),
+        }
+      } catch (err) {
+        failDiag(diag, 'malformed_tool_calls', {
+          attempts,
+          finishReason: choice?.finish_reason,
+          rawToolCalls: msg.tool_calls,
+          content: msg.content,
+        })
+        throw err
+      }
+      try {
+        diag.complete({
+          attempts,
+          finishReason: choice?.finish_reason,
+          rawToolCalls: msg.tool_calls,
+          content: msg.content,
+        })
+      } catch { /* diagnostic must not affect the turn */ }
+      return turn
+    },
+  }
+}
+
+function observeStub(config: Config, inner: LLM): LLM {
+  return {
+    async chat(messages, tools, opts = {}) {
+      if (!toolDiagEnabled()) return inner.chat(messages, tools, opts)
+      const diag = openChatDiag({
+        baseURL: undefined,
+        model: config.model,
+        toolNames: tools.map((tool) => tool?.function?.name),
+        toolChoice: tools.length ? opts.toolChoice : undefined,
+        mode: 'stub',
+      })
+      try {
+        const turn = await inner.chat(messages, tools, opts)
+        try {
+          diag.complete({
+            attempts: 1,
+            rawToolCalls: turn.toolCalls,
+            content: turn.content,
+            observedArgs: false,
+          })
+        } catch { /* diagnostic must not affect the turn */ }
+        return turn
+      } catch (err) {
+        failDiag(diag, 'error', { attempts: 1 })
+        throw err
       }
     },
   }
+}
+
+function failDiag(diag: ChatDiag, outcome: Parameters<ChatDiag['fail']>[0], meta?: Parameters<ChatDiag['fail']>[1]): void {
+  try { diag.fail(outcome, meta) } catch { /* diagnostic must not affect the turn */ }
 }
 
 /** 换了这几项才要换一个模型客户端；端口、看图之类的不相干 */

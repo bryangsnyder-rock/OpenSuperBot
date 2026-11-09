@@ -12,6 +12,7 @@ import { buildSystemPrompt, timeNote, withTimeNote, type PromptRoutine } from '.
 import { validateReportPayload } from './report.js'
 import { normalizeMode, type RoutineMode } from './routines.js'
 import { buildTools, WATCH_TOOL_NAMES } from './tools.js'
+import { openToolDiagFrame, recordDispatch, recordRoute, runWithToolDiag, toolDiagEnabled, type DispatchClass } from './tool-diag.js'
 
 export type AgentEvents = {
   onMessage: (m: MessageRow) => void
@@ -111,7 +112,16 @@ const MAX_ACTIVITY_STEPS = 40
 
 type ToolOutcome = { text: string; image?: string }
 
-export async function runTurn(
+export async function runTurn(...args: Parameters<typeof runTurnBody>): ReturnType<typeof runTurnBody> {
+  let frame: { id: string; step: number } | undefined
+  try {
+    if (toolDiagEnabled()) frame = openToolDiagFrame()
+  } catch { frame = undefined }
+  if (!frame) return runTurnBody(...args)
+  return runWithToolDiag(frame, () => runTurnBody(...args))
+}
+
+async function runTurnBody(
   deps: AgentDeps,
   userText: string,
   events: AgentEvents,
@@ -164,6 +174,9 @@ export async function runTurn(
     const messages = withTimeNote(history, timeNote(now, timeZone))
     const hasSkills = Boolean(deps.skills?.length && deps.onReadSkill)
     const tools = buildTools({ hasComputer, canRelay, hasSkills, watch: deps.watch === true, shell: deps.computer?.shell, kind: deps.computer?.kind })
+    try {
+      recordRoute({ watch: deps.watch === true, hasComputer, toolNames: tools.map((tool) => tool.function.name) })
+    } catch { /* diagnostic must not affect the turn */ }
     const maxSteps = deps.maxSteps && deps.maxSteps > 0 ? Math.floor(deps.maxSteps) : DEFAULT_MAX_STEPS
     const turnMs = deps.turnTimeoutMs ?? DEFAULT_TURN_MS
     const startedAt = Date.now()
@@ -343,16 +356,21 @@ const MAX_OPTION_CHARS = 80
 async function execToolCall(deps: TurnContext, call: ToolCall, events: AgentEvents, activity: Activity): Promise<ToolOutcome> {
   const args = (call.args ?? {}) as Record<string, unknown>
   const started = Date.now()
+  const note = (dispatch: DispatchClass, error?: unknown) => {
+    try { recordDispatch(call.name, dispatch, error) } catch { /* diagnostic must not affect dispatch */ }
+  }
   const log = (ok: boolean) =>
     deps.onAction?.({ tool: call.name, summary: summarize(call.name, args), ok, ms: Date.now() - started })
   const failed = (err: unknown): ToolOutcome => {
     log(false)
+    note('error', err)
     // 工具失败必须回喂模型（让它换招/如实汇报），而不是炸掉整个回合
     return { text: `Tool ${call.name} failed: ${err instanceof Error ? err.message : String(err)}` }
   }
   // 没在清单里给它的工具，模型硬要调也不行：清单是给模型看的，这里才是门
   if (deps.watch && !WATCH_TOOL_NAMES.has(call.name)) {
     log(false)
+    note('denied')
     return {
       text: `${call.name} is not available in a watch routine: this run only looks. `
         + 'If something should be done, hold it for approval and your operator decides.',
@@ -361,12 +379,14 @@ async function execToolCall(deps: TurnContext, call: ToolCall, events: AgentEven
   if (call.name === 'message_user') {
     const text = execMessageUser(deps, args, events)
     log(text === 'Report delivered.')
+    note(text === 'Report delivered.' ? 'ok' : 'rejected')
     return { text }
   }
   if (call.name === 'read_skill') {
     try {
       const text = await execReadSkill(deps, args)
       log(true)
+      note('ok')
       return { text }
     } catch (err) {
       return failed(err)
@@ -376,18 +396,26 @@ async function execToolCall(deps: TurnContext, call: ToolCall, events: AgentEven
     try {
       const text = truncate(await execWorkflowTool(deps, call.name, args, events))
       log(true)
+      note('ok')
       return { text }
     } catch (err) {
       return failed(err)
     }
   }
-  if (!COMPUTER_TOOL_NAMES.has(call.name)) return { text: `Unknown tool: ${call.name}` }
-  if (!deps.getComputer) return { text: 'You have no computer attached right now — this tool is unavailable.' }
+  if (!COMPUTER_TOOL_NAMES.has(call.name)) {
+    note('unknown_tool')
+    return { text: `Unknown tool: ${call.name}` }
+  }
+  if (!deps.getComputer) {
+    note('unavailable')
+    return { text: 'You have no computer attached right now — this tool is unavailable.' }
+  }
   const step = ACTIVITY_TOOL_NAMES.has(call.name) ? activity.start(call.name, summarize(call.name, args)) : null
   try {
     const outcome = await execComputerTool(deps, call.name, args, events)
     if (step) activity.finish(step, true, Date.now() - started)
     log(true)
+    note('ok')
     return outcome
   } catch (err) {
     if (step) activity.finish(step, false, Date.now() - started)
